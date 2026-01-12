@@ -53,10 +53,6 @@ jobs:
           images: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}
           tags: |
             type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push Docker image to ECR

@@ -14,7 +14,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Context
 from google.oauth2.credentials import Credentials
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request
@@ -29,9 +29,77 @@ SCOPES = ['https://www.googleapis.com/auth/calendar']
 # Create FastMCP server
 mcp = FastMCP(
     "Google Calendar MCP",
-    instructions="A Google Calendar MCP server that provides tools to view, create, update, and manage calendar events. Each tool requires google_calendar_credentials parameter (JSON string) for authentication.",
+    instructions="A Google Calendar MCP server that provides tools to view, create, update, and manage calendar events. Credentials are automatically retrieved from environment variables or request context - no need to pass credentials as parameters.",
     json_response=True
 )
+
+def get_credentials_from_header(ctx: Context = None) -> str:
+    """
+    Extract Google Calendar credentials from HTTP headers only.
+    Supports two formats:
+    1. JSON string: '{"access_token":"ya29..."}'
+    2. Plain access token: 'ya29...'
+    
+    Raises ValueError if credentials are not found in headers.
+    """
+    if not ctx:
+        raise ValueError("Context is required to extract credentials from headers")
+    
+    try:
+        # Access the Starlette Request object from request context
+        request_context = ctx.request_context
+        if not hasattr(request_context, 'request') or not request_context.request:
+            raise ValueError("Request context not available")
+        
+        # For streamable HTTP, request is a Starlette Request object
+        request = request_context.request
+        
+        # Access headers from Starlette Request object
+        # request.headers is a Headers object (case-insensitive dict-like)
+        header_dict = {}
+        for name in request.headers.keys():
+            header_dict[name.lower()] = request.headers[name]
+        
+        # Check for Google Calendar credentials header
+        # Try common header names
+        creds_header = (
+            header_dict.get('x-google-calendar-credentials') or
+            header_dict.get('google-calendar-credentials') or
+            header_dict.get('authorization')
+        )
+        
+        if not creds_header:
+            raise ValueError(
+                "Google Calendar credentials not found in HTTP headers. "
+                "Expected header: 'X-Google-Calendar-Credentials', 'Google-Calendar-Credentials', or 'Authorization'"
+            )
+        
+        # Handle Bearer token format
+        if creds_header.startswith('Bearer '):
+            token = creds_header.replace('Bearer ', '').strip()
+            # Convert to JSON string format
+            return json.dumps({"access_token": token})
+        
+        # Check if it's already a JSON string
+        try:
+            # Try to parse as JSON to validate
+            json.loads(creds_header)
+            # If it parses successfully, return as-is
+            return creds_header
+        except json.JSONDecodeError:
+            # If not JSON, treat as plain token and convert to JSON
+            token = creds_header.strip()
+            if token.startswith(('ya29.', '1//', 'ya.a0')):
+                return json.dumps({"access_token": token})
+            # Return as-is if we can't determine format (get_calendar_service will validate)
+            return creds_header
+    except ValueError:
+        # Re-raise ValueError (our own errors)
+        raise
+    except Exception as e:
+        logger.error(f"Error extracting credentials from headers: {e}")
+        raise ValueError(f"Failed to extract credentials from headers: {str(e)}")
+
 
 def get_calendar_service(google_calendar_credentials: str, impersonate_user: Optional[str] = None):
     """
@@ -152,20 +220,22 @@ def get_calendar_service(google_calendar_credentials: str, impersonate_user: Opt
 
 @mcp.tool()
 def list_calendars(
-    google_calendar_credentials: str,
-    impersonate_user: Optional[str] = None
+    impersonate_user: Optional[str] = None,
+    ctx: Context = None
 ) -> str:
     """List all available calendars.
     
+    Credentials are automatically retrieved from HTTP headers.
+    No need to pass credentials as a parameter.
+    
     Args:
-        google_calendar_credentials: JSON string containing Google Calendar credentials.
-            Can be Service Account JSON or OAuth Token JSON.
         impersonate_user: Optional email for service account domain-wide delegation.
     
     Returns:
         String listing all available calendars with their IDs.
     """
     try:
+        google_calendar_credentials = get_credentials_from_header(ctx)
         service = get_calendar_service(google_calendar_credentials, impersonate_user)
         calendars = service.calendarList().list().execute()
         
@@ -180,17 +250,18 @@ def list_calendars(
 
 @mcp.tool()
 def get_events(
-    google_calendar_credentials: str,
     calendar_id: str = "primary",
     max_results: int = 10,
     time_min: Optional[str] = None,
-    impersonate_user: Optional[str] = None
+    impersonate_user: Optional[str] = None,
+    ctx: Context = None
 ) -> str:
     """Get calendar events. 
     
+    Credentials are automatically retrieved from HTTP headers.
+    No need to pass credentials as a parameter.
+    
     Args:
-        google_calendar_credentials: JSON string containing Google Calendar credentials.
-            Can be Service Account JSON or OAuth Token JSON.
         calendar_id: Calendar ID (default: 'primary')
         max_results: Maximum number of events to return (default: 10)
         time_min: Start time in ISO format (default: now)
@@ -200,6 +271,7 @@ def get_events(
         String listing calendar events with their titles and start times.
     """
     try:
+        google_calendar_credentials = get_credentials_from_header(ctx)
         service = get_calendar_service(google_calendar_credentials, impersonate_user)
         
         if not time_min:
@@ -222,7 +294,8 @@ def get_events(
         for event in events:
             start = event['start'].get('dateTime', event['start'].get('date'))
             summary = event.get('summary', 'No Title')
-            result.append(f"- {summary} ({start})")
+            event_id = event.get('id', 'N/A')
+            result.append(f"- {summary} ({start}) [ID: {event_id}]")
         
         return "\n".join(result)
     except Exception as e:
@@ -234,7 +307,6 @@ def get_events(
 
 @mcp.tool()
 def create_event(
-    google_calendar_credentials: str,
     summary: str,
     start_time: str,
     end_time: Optional[str] = None,
@@ -245,7 +317,8 @@ def create_event(
     add_google_meet: bool = False,
     reminders_minutes: Optional[int] = 15,
     calendar_id: str = "primary",
-    impersonate_user: Optional[str] = None
+    impersonate_user: Optional[str] = None,
+    ctx: Context = None
 ) -> str:
     """Create a calendar event with optional attendees, notifications, and reminders.
     
@@ -255,10 +328,10 @@ def create_event(
     When attendees are added and send_notifications is True, attendees will receive
     email notifications in Gmail showing "You have a meeting at [time]".
     
+    Credentials are automatically retrieved from environment variables or request headers.
+    No need to pass credentials as a parameter.
+    
     Args:
-        google_calendar_credentials: JSON string containing Google Calendar credentials.
-            The organizer email is automatically extracted from this token - no need to provide it.
-            Can be Service Account JSON or OAuth Token JSON.
         summary: Event title
         start_time: Start time in ISO format (e.g., '2024-01-15T14:00:00')
         end_time: End time in ISO format (optional, defaults to 1 hour after start)
@@ -276,6 +349,8 @@ def create_event(
         String confirming event creation with event ID and Google Meet link if added.
     """
     try:
+        # Get credentials from HTTP headers only
+        google_calendar_credentials = get_credentials_from_header(ctx)
         service = get_calendar_service(google_calendar_credentials, impersonate_user)
         
         # Parse and format times
@@ -356,17 +431,18 @@ def create_event(
 
 @mcp.tool()
 def check_availability(
-    google_calendar_credentials: str,
     time_min: str,
     time_max: str,
     calendar_id: str = "primary",
-    impersonate_user: Optional[str] = None
+    impersonate_user: Optional[str] = None,
+    ctx: Context = None
 ) -> str:
     """Check calendar availability for a time range.
     
+    Credentials are automatically retrieved from HTTP headers.
+    No need to pass credentials as a parameter.
+    
     Args:
-        google_calendar_credentials: JSON string containing Google Calendar credentials.
-            Can be Service Account JSON or OAuth Token JSON.
         time_min: Start time in ISO format
         time_max: End time in ISO format
         calendar_id: Calendar ID (default: 'primary')
@@ -376,6 +452,7 @@ def check_availability(
         String indicating availability or listing busy periods.
     """
     try:
+        google_calendar_credentials = get_credentials_from_header(ctx)
         service = get_calendar_service(google_calendar_credentials, impersonate_user)
         
         # Get events in the time range
@@ -405,16 +482,17 @@ def check_availability(
 
 @mcp.tool()
 def delete_event(
-    google_calendar_credentials: str,
     event_id: str,
     calendar_id: str = "primary",
-    impersonate_user: Optional[str] = None
+    impersonate_user: Optional[str] = None,
+    ctx: Context = None
 ) -> str:
     """Delete a calendar event.
     
+    Credentials are automatically retrieved from HTTP headers.
+    No need to pass credentials as a parameter.
+    
     Args:
-        google_calendar_credentials: JSON string containing Google Calendar credentials.
-            Can be Service Account JSON or OAuth Token JSON.
         event_id: Event ID to delete
         calendar_id: Calendar ID (default: 'primary')
         impersonate_user: Optional email for service account domain-wide delegation.
@@ -423,6 +501,7 @@ def delete_event(
         String confirming event deletion.
     """
     try:
+        google_calendar_credentials = get_credentials_from_header(ctx)
         service = get_calendar_service(google_calendar_credentials, impersonate_user)
         service.events().delete(
             calendarId=calendar_id,
@@ -448,4 +527,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-

@@ -1,0 +1,11 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "google-calendar-mcp"
+version = "1.0.0"
+description = "Google Calendar MCP Server - Manage Google Calendar events with natural language date/time parsing"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}

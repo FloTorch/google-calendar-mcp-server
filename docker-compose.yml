@@ -1,0 +1,24 @@
+services:
+  google-calendar-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: google-calendar-mcp:latest
+    container_name: google-calendar-mcp-server
+    restart: unless-stopped
+    ports:
+      - "7860:7860"
+    environment:
+      - PORT=7860
+      - HOST=0.0.0.0
+      - GOOGLE_CALENDAR_CREDENTIALS=${GOOGLE_CALENDAR_CREDENTIALS:-}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/google-calendar/mcp')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    env_file:
+      - .env

@@ -8,9 +8,12 @@ authenticated Google Calendar service instances.
 import json
 import logging
 import os
+import socket
 from datetime import datetime, timezone
 from typing import Optional
 
+import httplib2
+import google_auth_httplib2
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -20,6 +23,74 @@ from mcp.server.fastmcp import Context
 from google_calendar_mcp.config import SCOPES
 
 logger = logging.getLogger(__name__)
+
+
+def _is_truthy_env(name: str) -> bool:
+    """Parse common truthy env values."""
+    value = os.getenv(name, "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+class _IPv4OnlyHttp(httplib2.Http):
+    """
+    httplib2 transport that prefers IPv4 DNS answers.
+
+    This is a targeted workaround for environments where IPv6 connect
+    attempts can stall and produce TimeoutError during Google API calls.
+    """
+
+    def request(self, uri, method="GET", body=None, headers=None, **kwargs):
+        original_getaddrinfo = socket.getaddrinfo
+
+        def ipv4_only_getaddrinfo(host, port, *args, **kwargs):
+            infos = original_getaddrinfo(host, port, *args, **kwargs)
+            ipv4_infos = [info for info in infos if info[0] == socket.AF_INET]
+            return ipv4_infos if ipv4_infos else infos
+
+        socket.getaddrinfo = ipv4_only_getaddrinfo
+        try:
+            return super().request(uri, method=method, body=body, headers=headers, **kwargs)
+        finally:
+            socket.getaddrinfo = original_getaddrinfo
+
+
+def _build_calendar_service_with_transport(creds):
+    """
+    Build Google Calendar service with optional network transport overrides.
+
+    Env options:
+    - GOOGLE_FORCE_IPV4=true: force IPv4 DNS resolution for httplib2
+    - GOOGLE_HTTP_TIMEOUT_SECONDS=20: socket timeout for Google HTTP calls
+    """
+    force_ipv4 = True
+    timeout_seconds = 40
+
+    if force_ipv4:
+        logger.info("GOOGLE_FORCE_IPV4 is enabled. Using IPv4-only HTTP transport.")
+        base_http = _IPv4OnlyHttp(timeout=timeout_seconds)
+    else:
+        base_http = httplib2.Http(timeout=timeout_seconds)
+
+    can_auto_refresh = True
+    if isinstance(creds, Credentials):
+        # OAuth token-only credentials cannot refresh without these fields.
+        can_auto_refresh = bool(
+            creds.refresh_token and creds.client_id and creds.client_secret and creds.token_uri
+        )
+
+    if not can_auto_refresh:
+        logger.info(
+            "OAuth credentials do not include refresh fields. "
+            "Disabling auto-refresh-on-401 for this session."
+        )
+
+    authed_http = google_auth_httplib2.AuthorizedHttp(
+        creds,
+        http=base_http,
+        refresh_status_codes=(401,) if can_auto_refresh else (),
+        max_refresh_attempts=2 if can_auto_refresh else 0,
+    )
+    return build("calendar", "v3", http=authed_http, cache_discovery=False)
 
 
 def _extract_headers_from_context(ctx: Optional[Context]) -> dict:
@@ -173,7 +244,7 @@ def get_calendar_service(
             if impersonate_user:
                 creds = creds.with_subject(impersonate_user)
             
-            return build('calendar', 'v3', credentials=creds)
+            return _build_calendar_service_with_transport(creds)
         except Exception as e:
             raise ValueError(f"Service Account authentication failed: {e}")
     
@@ -245,7 +316,7 @@ def get_calendar_service(
                 )
                 creds = Credentials(token=token, scopes=SCOPES)
             
-            return build('calendar', 'v3', credentials=creds)
+            return _build_calendar_service_with_transport(creds)
         except Exception as e:
             raise ValueError(f"OAuth token authentication failed: {e}")
     

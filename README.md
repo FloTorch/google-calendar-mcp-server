@@ -620,4 +620,57 @@ Test the server using the simplified endpoints or MCP JSON-RPC format. Ensure yo
 }
 ```
 
+## Network Timeout Diagnostics (WinError 10060)
+
+If tools fail with socket timeout errors (for example `WinError 10060`), run the
+client-stack diagnostic script to isolate DNS/TCP/HTTPS/auth issues.
+
+### Run with environment credentials
+
+```bash
+python debug_google_client_stack.py --pretty
+```
+
+### Run with inline credentials JSON
+
+```bash
+python debug_google_client_stack.py --credentials "{\"access_token\":\"ya29...\",\"refresh_token\":\"...\",\"client_id\":\"...\",\"client_secret\":\"...\"}" --pretty
+```
+
+### Run with credentials file
+
+```bash
+python debug_google_client_stack.py --credentials-file ./creds.json --pretty
+```
+
+### What to check in output
+
+- `hosts[].dns.ok=false` -> DNS resolution issue
+- `hosts[].tcp_443.error_type=timeout` -> network/firewall/proxy path blocked
+- `hosts[].tcp_443.error_type=connection_refused` -> endpoint/proxy actively refused
+- `https_discovery.ok=false` with SSL/proxy errors -> TLS interception or proxy config issue
+- `google_client_stack.error_type=http_error` -> request reached Google but failed at API/auth layer
+
+### Runtime network settings
+
+For environments where `httplib2` times out on IPv6 paths, you can force IPv4:
+
+```bash
+# Linux/macOS
+export GOOGLE_FORCE_IPV4=true
+export GOOGLE_HTTP_TIMEOUT_SECONDS=20
+python -m google_calendar_mcp
+```
+
+```powershell
+# Windows PowerShell
+$env:GOOGLE_FORCE_IPV4="true"
+$env:GOOGLE_HTTP_TIMEOUT_SECONDS="20"
+python -m google_calendar_mcp
+```
+
+Notes:
+- `GOOGLE_FORCE_IPV4=true` enables IPv4-only DNS resolution in Google API transport.
+- `GOOGLE_HTTP_TIMEOUT_SECONDS` controls socket timeout for Google API requests.
+
 

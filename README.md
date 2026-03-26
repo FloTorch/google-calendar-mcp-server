@@ -547,7 +547,7 @@ pip install -e .
 python -m google_calendar_mcp
 ```
 
-### Docker: Build and Verify
+### Docker: Build and Verify the dokcer
 
 **1. Build the image**
 

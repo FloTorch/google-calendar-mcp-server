@@ -101,19 +101,6 @@ def format_calendar_error(error: Exception) -> str:
     if "404" in error_msg or "not found" in error_msg.lower():
         return "Calendar not found or not accessible. Please check: 1) Your credentials have access to the calendar, 2) The calendar ID is correct (use 'primary' for your main calendar), 3) Your Google account has calendar access enabled."
     
-    if "timed out" in error_msg.lower() or "winerror 10060" in error_msg.lower():
-        return (
-            "Network timeout while connecting to Google Calendar API. "
-            "If your environment has IPv6 routing issues, set GOOGLE_FORCE_IPV4=true. "
-            "You can also increase GOOGLE_HTTP_TIMEOUT_SECONDS (default: 20)."
-        )
-
-    if "necessary fields need to refresh the access token" in error_msg.lower():
-        return (
-            "Access token cannot be refreshed because refresh credentials are missing. "
-            "Provide refresh_token, client_id, and client_secret, or send a new access token."
-        )
-
     if "invalid" in error_msg.lower():
         return f"Invalid request: {error_msg[:200]}"
     

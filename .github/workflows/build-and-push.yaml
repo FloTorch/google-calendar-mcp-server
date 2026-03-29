@@ -96,5 +96,5 @@ jobs:
 
       - name: Rollout restart deployment
         run: |
-          kubectl rollout restart deployment/google_calendar_mcp -n dev
-          kubectl rollout status deployment/google_calendar_mcp -n dev
+          kubectl rollout restart deployment/google-calendar-mcp -n dev
+          kubectl rollout status deployment/google-calendar-mcp -n dev
